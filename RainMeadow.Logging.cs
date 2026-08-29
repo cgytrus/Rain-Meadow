@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using UnityEngine;
 
 namespace RainMeadow
@@ -16,6 +17,9 @@ namespace RainMeadow
 
     public partial class RainMeadow
     {
+        private static readonly int _mainThreadId = Thread.CurrentThread.ManagedThreadId;
+        private static bool IsMainThread => Thread.CurrentThread.ManagedThreadId == _mainThreadId;
+
         public enum LogLevel
         {
             Debug = 0,
@@ -24,7 +28,7 @@ namespace RainMeadow
             Error = 3
         }
         private static string TrimCaller(string callerFile) { return (callerFile = callerFile.Substring(Mathf.Max(callerFile.LastIndexOf(Path.DirectorySeparatorChar), callerFile.LastIndexOf(Path.AltDirectorySeparatorChar)) + 1)).Substring(0, callerFile.LastIndexOf('.')); }
-        private static string LogTime() { return ((int)(Time.time * 1000)).ToString(); }
+        private static string LogTime() { return IsMainThread ? ((int)(Time.time * 1000)).ToString() : "off-thread"; }
         private static string LogDOT() { return DateTime.Now.ToUniversalTime().TimeOfDay.ToString().Substring(0, 8); }
         // Note: we use Logger.Info because Bepinex ships with logging level info by default. We are promoting our debugs to infos here so they get through.
         public static void Debug(object data, [CallerFilePath] string callerFile = "", [CallerMemberName] string callerName = "")
