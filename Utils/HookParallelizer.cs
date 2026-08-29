@@ -9,6 +9,28 @@ using MonoMod.RuntimeDetour.HookGen;
 
 namespace RainMeadow;
 
+/// <summary>
+/// Allows applying multiple hooks at once in parallel.
+/// Create an instance to start collecting hooks made with
+/// <see cref="Hook"/>, <see cref="ILHook"/>,
+/// <see cref="HookEndpointManager.Add"/>, <see cref="HookEndpointManager.Modify"/>,
+/// <see cref="On"/> and <see cref="IL"/>,
+/// they will not be applied immediately.
+/// Dispose of or call <see cref="ApplyHooks"/> to apply the collected hooks in parallel.
+/// Be aware that removing/undoing hooks made with this
+/// and referencing anything in <see cref="Hook"/> and <see cref="ILHook"/> while this is active
+/// is unsupported.
+/// </summary>
+/// <example>
+/// <code>
+/// using (new HookParallelizer()) {
+///     On.Class.Method1 += On_Class_Method1;
+///     On.Class.Method2 += On_Class_Method2;
+///     On.Class.Method3 += On_Class_Method3;
+///     IL.Class.Method4 += IL_Class_Method4;
+/// }
+/// </code>
+/// </example>
 public class HookParallelizer : IDisposable
 {
     // need to keep a list of hooks even if it isnt used to prevent them from getting garbage collected and undone
