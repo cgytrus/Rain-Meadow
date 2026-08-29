@@ -188,11 +188,6 @@ namespace RainMeadow
                     MeadowProfiler.FullPatch();
                 }
 
-                using (new HookParallelizer())
-                {
-                    DeathContextualizer.CreateBindings();
-                }
-
                 StartCoroutine(CheckForUpdates());
 
                 UsernameGenerator.Timestamp = DateTime.Now.Ticks;
@@ -249,6 +244,8 @@ namespace RainMeadow
 
                 using (new HookParallelizer())
                 {
+                    DeathContextualizer.CreateBindings();
+
                     MenuHooks();
                     GameHooks();
                     CreatureHooks();
@@ -264,14 +261,14 @@ namespace RainMeadow
                     ItemHooks();
                     ObjectHooks();
                     JollyHooks();
+
+                    MeadowMusic.EnableMusic();
+                    PlopMachine = new PlopMachine();
+                    PlopMachine.OnEnable();
                 }
 
                 CosmeticManager.FetchCosmetics();
                 CosmeticManager.ParseAvailableCosmetics();
-
-                MeadowMusic.EnableMusic();
-                this.PlopMachine = new PlopMachine();
-                this.PlopMachine.OnEnable();
 
                 MeadowProgression.LoadProgression();
 
