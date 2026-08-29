@@ -3,6 +3,8 @@ using Newtonsoft.Json.Linq;
 using RainMeadow.Game;
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
@@ -27,6 +29,10 @@ namespace RainMeadow
         public bool fullyEnabled;
         public static RainMeadowOptions rainMeadowOptions;
         private PlopMachine PlopMachine;
+
+        private static readonly List<(MethodBase method, Delegate callback, bool modify)> pendingHooks = [];
+        // need to keep a list of hooks even if it isnt used to prevent them from getting garbage collected and undone
+        private static readonly List<IDetour> hooks = [];
 
         public void OnEnable()
         {
@@ -242,6 +248,10 @@ namespace RainMeadow
                 }
                 self.Shaders.Add("FlatWaterLightRippleSide", FShader.CreateShader("FlatWaterLight", Shader.Find("Futile/FlatWaterLight"), ["ripple_other_side"]));
 
+                // this will prevent the hooks from getting added and just add them to pendingHooks instead
+                HookEndpointManager.OnAdd += On_HookEndpointManager_OnAdd;
+                HookEndpointManager.OnModify += On_HookEndpointManager_OnModify;
+
                 MenuHooks();
                 GameHooks();
                 CreatureHooks();
@@ -257,6 +267,11 @@ namespace RainMeadow
                 ItemHooks();
                 ObjectHooks();
                 JollyHooks();
+
+                HookEndpointManager.OnAdd -= On_HookEndpointManager_OnAdd;
+                HookEndpointManager.OnModify -= On_HookEndpointManager_OnModify;
+
+                ApplyHooks();
 
                 CosmeticManager.FetchCosmetics();
                 CosmeticManager.ParseAvailableCosmetics();
@@ -282,6 +297,36 @@ namespace RainMeadow
                 fullyInit = false;
                 //throw;
             }
+        }
+
+        private static bool On_HookEndpointManager_OnAdd(MethodBase method, Delegate callback)
+        {
+            pendingHooks.Add((method, callback, false));
+            return false;
+        }
+
+        private static bool On_HookEndpointManager_OnModify(MethodBase method, Delegate callback)
+        {
+            pendingHooks.Add((method, callback, true));
+            return false;
+        }
+
+        private static void ApplyHooks()
+        {
+            ConcurrentBag<IDetour> hooksAdded = [ ];
+            Parallel.ForEach(pendingHooks, hook =>
+            {
+                (MethodBase method, Delegate callback, bool modify) = hook;
+                // unfortunately, HookEndpointManager.Add/Modify is not thread safe,
+                // so have to create hooks manually instead
+                hooksAdded.Add(
+                    modify
+                        ? new ILHook(method, (ILContext.Manipulator)callback)
+                        : new Hook(method, callback)
+                );
+            });
+            hooks.AddRange(hooksAdded);
+            pendingHooks.Clear();
         }
 
         IEnumerator CheckForUpdates()
