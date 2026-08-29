@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using BepInEx.Bootstrap;
 using UnityEngine;
 
 namespace RainMeadow
@@ -50,30 +51,30 @@ namespace RainMeadow
         private static Dictionary<StateType, StateHandler> handlersByEnum = new Dictionary<StateType, StateHandler>();
         private static Dictionary<Type, StateHandler> handlersByType = new Dictionary<Type, StateHandler>();
 
-        public static void RegisterState(Type type)
+        public static bool RegisterState(Type type)
         {
-            if (!type.IsAbstract && typeof(OnlineState).IsAssignableFrom(type))
-            {
-                StateType stateType = new StateType(type.FullName, true);
-                handlersByEnum[stateType] = handlersByType[type] = new StateHandler(stateType, type);
-            }
+            if (type.IsAbstract || !typeof(OnlineState).IsAssignableFrom(type))
+                return false;
+            StateType stateType = new StateType(type.FullName, true);
+            handlersByEnum[stateType] = handlersByType[type] = new StateHandler(stateType, type);
+            return true;
         }
 
         internal static void InitializeBuiltinTypes()
         {
             _ = StateType.Unknown; // runs static init
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies().ToList())
+            Assembly selfAssembly = Assembly.GetExecutingAssembly();
+            foreach (var assembly in Chainloader.PluginInfos.Select(info => info.Value.Instance.GetType().Assembly))
             {
-                bool isMain = assembly == Assembly.GetExecutingAssembly();
+                bool isMain = assembly == selfAssembly;
                 bool hasState = false; // wether this assembly tried to register any onlinestates
                 try
                 {
-                    foreach (var type in assembly.GetTypesSafely().ToList())
+                    foreach (var type in assembly.GetTypesSafely())
                     {
                         try
                         {
-                            hasState |= typeof(OnlineState).IsAssignableFrom(type);
-                            OnlineState.RegisterState(type);
+                            hasState |= RegisterState(type);
                         }
                         catch (Exception e)
                         {
