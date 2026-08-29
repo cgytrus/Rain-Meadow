@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -229,7 +230,7 @@ namespace RainMeadow
             }
         }
 
-        internal static Dictionary<Serializer.TypeInfo, MethodInfo> serializerMethods = new();
+        internal static ConcurrentDictionary<Serializer.TypeInfo, MethodInfo> serializerMethods = new();
 
         // tempting to try and cache this, would need a query icomparable
         // liz: say no more!
@@ -245,7 +246,7 @@ namespace RainMeadow
             }
             RainMeadow.Debug($"Adding cached method for {key}");
             var method = MakeSerializationMethod(fieldType, nullable, polymorphic, longList);
-            serializerMethods.Add(key, method);
+            serializerMethods.TryAdd(key, method);
             return method;
         }
 

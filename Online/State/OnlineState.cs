@@ -1,9 +1,11 @@
 ﻿using RainMeadow.Generics;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Threading.Tasks;
 using BepInEx.Bootstrap;
 using UnityEngine;
 
@@ -51,44 +53,53 @@ namespace RainMeadow
         private static Dictionary<StateType, StateHandler> handlersByEnum = new Dictionary<StateType, StateHandler>();
         private static Dictionary<Type, StateHandler> handlersByType = new Dictionary<Type, StateHandler>();
 
-        public static bool RegisterState(Type type)
+        public static void RegisterState(Type type)
         {
-            if (type.IsAbstract || !typeof(OnlineState).IsAssignableFrom(type))
-                return false;
-            StateType stateType = new StateType(type.FullName, true);
-            handlersByEnum[stateType] = handlersByType[type] = new StateHandler(stateType, type);
-            return true;
+            if (!type.IsAbstract && typeof(OnlineState).IsAssignableFrom(type))
+            {
+                StateType stateType = new StateType(type.FullName, true);
+                handlersByEnum[stateType] = handlersByType[type] = new StateHandler(stateType, type);
+            }
         }
 
         internal static void InitializeBuiltinTypes()
         {
             _ = StateType.Unknown; // runs static init
+
             Assembly selfAssembly = Assembly.GetExecutingAssembly();
+
+            List<(StateType, Type)> statesToRegister = [ ];
             foreach (var assembly in Chainloader.PluginInfos.Select(info => info.Value.Instance.GetType().Assembly))
             {
-                bool isMain = assembly == selfAssembly;
-                bool hasState = false; // wether this assembly tried to register any onlinestates
+                foreach (var type in assembly.GetTypesSafely())
+                {
+                    if (type.IsAbstract || !typeof(OnlineState).IsAssignableFrom(type))
+                        continue;
+                    statesToRegister.Add((new StateType(type.FullName, true), type));
+                }
+            }
+
+            RainMeadow.Info($"Registering {statesToRegister.Count} states in parallel");
+
+            ConcurrentBag<StateHandler> statesRegistered = [ ];
+            Parallel.ForEach(statesToRegister, state =>
+            {
+                (StateType stateType, Type type) = state;
                 try
                 {
-                    foreach (var type in assembly.GetTypesSafely())
-                    {
-                        try
-                        {
-                            hasState |= RegisterState(type);
-                        }
-                        catch (Exception e)
-                        {
-                            RainMeadow.Error(assembly.FullName + ":" + type.FullName);
-                            if (isMain || hasState) throw e;
-                            RainMeadow.Error(e);
-                        }
-                    }
+                    statesRegistered.Add(new StateHandler(stateType, type));
                 }
                 catch (Exception e)
                 {
-                    if (isMain || hasState) throw e;
+                    RainMeadow.Error(type.Assembly.FullName + ":" + type.FullName);
+                    if (type.Assembly == selfAssembly) throw e;
                     RainMeadow.Error(e);
                 }
+            });
+
+            foreach (StateHandler state in statesRegistered)
+            {
+                handlersByEnum[state.stateType] = handlersByType[state.type] = state;
             }
         }
 
