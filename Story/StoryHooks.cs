@@ -1958,10 +1958,11 @@ namespace RainMeadow
                 var vanilla = il.DefineLabel();
                 var cont = il.DefineLabel();
                 var skip = il.DefineLabel();
-                c.GotoNext(
-                    i => i.MatchLdsfld<ModManager>("CoopAvailable"),
-                    i => i.MatchBrfalse(out vanilla)
-                    );
+
+                // these are together in rain world but rain meadow adds another il hook somewhere that separates these
+                c.GotoNext(i => i.MatchLdsfld<ModManager>(nameof(ModManager.CoopAvailable)));
+                c.GotoNext(i => i.MatchBrfalse(out vanilla));
+
                 c.GotoLabel(vanilla);
                 c.GotoNext(moveType: MoveType.After,
                     i => i.MatchIsinst<Player>()
