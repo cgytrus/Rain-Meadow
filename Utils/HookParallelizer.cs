@@ -1,12 +1,17 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using HarmonyLib;
 using Mono.Cecil.Cil;
+using Mono.Collections.Generic;
 using MonoMod.Cil;
 using MonoMod.RuntimeDetour;
 using MonoMod.Utils;
+using ExceptionHandler = Mono.Cecil.Cil.ExceptionHandler;
+using OpCodes = Mono.Cecil.Cil.OpCodes;
 
 namespace RainMeadow;
 
@@ -119,13 +124,13 @@ public class HookParallelizer : IDisposable
     public void ApplyHooks()
     {
         RainMeadow.Info($"Applying {_pendingDetours.Count} hooks in parallel");
-        Parallel.ForEach(_pendingDetours, hook => hook.InvokeCtor());
+        Parallel.ForEach(_pendingDetours, hook => hook.Apply());
         _pendingDetours.Clear();
     }
 
     private interface IPendingDetour
     {
-        public void InvokeCtor();
+        public void Apply();
     }
 
     private class PendingHook(Hook hook, MethodBase from, MethodInfo to, object? target, HookConfig config)
@@ -140,7 +145,68 @@ public class HookParallelizer : IDisposable
 
         private static readonly Ctor _ctor = ctorInfo.CreateDelegate<Ctor>();
 
-        public void InvokeCtor() => _ctor(hook, from, to, target, ref config);
+        private static readonly Dictionary<MethodBase, List<Detour>> _detourMap =
+            (Dictionary<MethodBase, List<Detour>>)AccessTools.Field(typeof(Detour), "_DetourMap").GetValue(null);
+
+        public void Apply()
+        {
+            ApplyMonoModPriorityWorkaround();
+            _ctor(hook, from, to, target, ref config);
+        }
+
+        private static readonly List<Hook> _workaroundHooks = [ ];
+        private void ApplyMonoModPriorityWorkaround()
+        {
+            // hook priorities break with exactly two detours, so add one that does nothing to work around the bug.
+            if (_detourMap.TryGetValue(from, out List<Detour> detours) && detours.Count > 2)
+                return;
+
+            Type[] origParamTypes = from.IsStatic
+                ? from.GetParameters().Select(p => p.ParameterType).ToArray()
+                : [ from.GetThisParamType(), ..from.GetParameters().Select(p => p.ParameterType) ];
+
+            // first try getting the parameter type from the hook
+            Type? origDelegateType = to.GetParameters().FirstOrDefault()?.ParameterType;
+
+            // then try Action/Func
+            if (origDelegateType is null || !typeof(Delegate).IsAssignableFrom(origDelegateType))
+            {
+                try
+                {
+                    origDelegateType = to.ReturnType == typeof(void)
+                        ? AccessTools
+                            .TypeByName($"System.Action`{origParamTypes.Length}")?
+                            .MakeGenericType(origParamTypes)
+                        : AccessTools
+                            .TypeByName($"System.Func`{origParamTypes.Length + 1}")?
+                            .MakeGenericType([ ..origParamTypes, to.ReturnType ]);
+                }
+                catch (Exception ex)
+                {
+                    RainMeadow.Warn(ex);
+                    origDelegateType = null;
+                }
+            }
+
+            if (origDelegateType is null)
+            {
+                RainMeadow.Warn("Failed to apply MonoMod.RuntimeDetour hook priority workaround");
+                return;
+            }
+
+            using DynamicMethodDefinition dmd = new(
+                $"MonoModPriorityWorkaround<{from.GetID(simple: true)}>",
+                to.ReturnType, // cant get return type of from but to should be the same
+                [ origDelegateType, ..origParamTypes ]
+            );
+            ILProcessor il = dmd.GetILProcessor();
+            il.Emit(OpCodes.Ldarg, 0);
+            for (int i = 0; i < origParamTypes.Length; i++)
+                il.Emit(OpCodes.Ldarg, i + 1);
+            il.Emit(OpCodes.Callvirt, origDelegateType.GetMethod("Invoke"));
+            il.Emit(OpCodes.Ret);
+            _workaroundHooks.Add(new Hook(from, dmd.Generate()));
+        }
     }
 
     private class PendingILHook(ILHook hook, MethodBase from, ILContext.Manipulator manipulator, ILHookConfig config)
@@ -157,6 +223,25 @@ public class HookParallelizer : IDisposable
 
         private static readonly Ctor _ctor = ctorInfo.CreateDelegate<Ctor>();
 
-        public void InvokeCtor() => _ctor(hook, from, manipulator, ref config);
+        private static readonly IDictionary _map =
+            (IDictionary)AccessTools.Field(typeof(ILHook), "_Map").GetValue(null);
+
+        private static readonly FieldInfo _contextChainInfo =
+            AccessTools.Field(_map.GetType().GetGenericArguments()[1], "Chain");
+
+        public void Apply()
+        {
+            ApplyMonoModPriorityWorkaround();
+            _ctor(hook, from, manipulator, ref config);
+        }
+
+        private static readonly List<ILHook> _workaroundHooks = [ ];
+        private void ApplyMonoModPriorityWorkaround()
+        {
+            // hook priorities break with exactly two detours, so add one that does nothing to work around the bug.
+            if (_map.Contains(from) && ((List<ILHook>)_contextChainInfo.GetValue(_map[from])).Count > 2)
+                return;
+            _workaroundHooks.Add(new ILHook(from, _ => { }, new ILHookConfig { ManualApply = true }));
+        }
     }
 }
