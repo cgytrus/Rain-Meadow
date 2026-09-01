@@ -84,7 +84,115 @@ public class HookParallelizer : IDisposable
     private void On_Hook_ctor(Hook self, MethodBase from, MethodInfo to, object target, ref HookConfig config)
     {
         _pendingDetours.Add(new PendingHook(self, from, to, target, config));
+#if DEBUG
+        if (IsHookPriorityProblematic(from, to, config, out string problem))
+            RainMeadow.Error(problem);
+#endif
     }
+
+#if DEBUG
+    private readonly HashSet<MethodBase> _hookedMethods = [ ];
+    private bool IsHookPriorityProblematic(MethodBase from, MethodInfo to, HookConfig config, out string problem)
+    {
+        problem = null!;
+
+        if (config.Priority != 0)
+            return false;
+
+        string logPrefix = $"{from.GetID(simple: true)} hook {to.GetID(simple: true)} with default priority";
+
+        if (!_hookedMethods.Add(from))
+            logPrefix += " and another hook";
+
+        Type? origType = to.GetParameters().FirstOrDefault()?.ParameterType;
+
+        if (origType is null || !typeof(Delegate).IsAssignableFrom(origType))
+        {
+            problem = $"{logPrefix} does not have orig param";
+            return true;
+        }
+
+        using DynamicMethodDefinition dmd = new(to);
+        using ILContext il = new(dmd.Definition);
+        il.ReferenceBag = RuntimeILReferenceBag.Instance; // i dont think this is needed but keep it just in case
+
+        List<(Instruction from, Instruction to)> branches = il.Instrs
+            .Where(x => x.Operand is Instruction)
+            .Select(x => (x, (Instruction)x.Operand))
+            .Concat(
+                il.Instrs
+                    .Where(x => x.Operand is Instruction[])
+                    .SelectMany(x => ((Instruction[])x.Operand).Select(y => (x, y)))
+            )
+            .ToList();
+
+        Collection<ExceptionHandler> exceptionHandles = il.Body.ExceptionHandlers;
+
+        // cant pass origType into MatchCallvirt directly
+        // because FullName in reflection and Fullname in Mono.Cecil are formatted differently for generics
+        string origTypeFullName = il.Body.Method.Module.ImportReference(origType).FullName;
+
+        ILCursor cursor = new(il);
+
+        bool everCallsOrig = false;
+
+        // first ldarg.1, then callvirt with our orig param type
+        while (cursor.TryGotoNext(x => x.MatchLdarg(to.IsStatic ? 0 : 1))
+            && cursor.TryGotoNext(x => x.MatchCallvirt(origTypeFullName, "Invoke")))
+        {
+            everCallsOrig = true;
+
+            // any branches that might skip this instruction
+            if (branches.Any(x => x.from.Offset < cursor.Next.Offset && cursor.Next.Offset < x.to.Offset))
+            {
+                problem = $"{logPrefix} might not call orig (branch)";
+                return true;
+            }
+
+            if (cursor.Clone().TryGotoPrev(x => x.MatchRet()))
+            {
+                problem = $"{logPrefix} might not call orig (early return)";
+                return true;
+            }
+
+            if (cursor.Clone().TryGotoPrev(x => x.MatchJmp(out _)))
+            {
+                problem = $"{logPrefix} might not call orig (jump)";
+                return true;
+            }
+
+            if (cursor.Clone().TryGotoPrev(x => x.MatchTail()))
+            {
+                problem = $"{logPrefix} might not call orig (tail call)";
+                return true;
+            }
+
+            // ReSharper disable once InvertIf
+            // throws before the current instruction that are within the same try
+            if (cursor.Clone().TryGotoPrev(x => x.MatchThrow()
+                    && exceptionHandles.Any(y =>
+                        y.TryStart.Offset <= cursor.Next.Offset
+                        && cursor.Next.Offset < y.TryEnd.Offset
+                        && y.TryStart.Offset <= x.Offset
+                        && x.Offset < y.TryEnd.Offset
+                    )
+                ))
+            {
+                problem = $"{logPrefix} might not call orig (throw)";
+                return true;
+            }
+        }
+
+        // ReSharper disable once ConvertIfStatementToReturnStatement
+        if (!everCallsOrig)
+        {
+            problem = $"{logPrefix} never calls orig";
+            return true;
+        }
+
+        return false;
+    }
+#endif
 
     private void IL_DetourContext_get_IsValid(ILContext il)
     {
@@ -124,7 +232,12 @@ public class HookParallelizer : IDisposable
     public void ApplyHooks()
     {
         RainMeadow.Info($"Applying {_pendingDetours.Count} hooks in parallel");
-        Parallel.ForEach(_pendingDetours, hook => hook.Apply());
+        IEnumerable<IPendingDetour> pendingDetours = _pendingDetours;
+#if DEBUG
+        // randomize order in debug to catch priority bugs more easily
+        pendingDetours = pendingDetours.OrderBy(_ => RXRandom._randomSource.Next());
+#endif
+        Parallel.ForEach(pendingDetours, hook => hook.Apply());
         _pendingDetours.Clear();
     }
 
